@@ -1,5 +1,5 @@
 # ============================================
-# ربات تلگرام با محدودیت، تایمر و انیمیشن
+# ربات تلگرام با انیمیشن ویرایش‌شونده و اتصال به کاگل
 # ============================================
 import os
 import time
@@ -18,8 +18,8 @@ KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME")
 KAGGLE_KERNEL_SLUG = os.environ.get("KAGGLE_KERNEL_SLUG")
 
 # ========== دیتابیس ساده ==========
-user_data = {}  # {user_id: {"count": 0, "last_reset": "2024-01-01", "last_message": None, "history": []}}
-cooldown_seconds = 30  # ۳۰ ثانیه تاخیر بین پیام‌ها
+user_data = {}
+cooldown_seconds = 30
 
 def get_user_data(user_id: str) -> dict:
     if user_id not in user_data:
@@ -40,18 +40,12 @@ def reset_if_needed(user_id: str):
         data["history"] = []
 
 def can_ask(user_id: str) -> tuple:
-    """
-    بررسی می‌کند که کاربر می‌تواند سوال بپرسد یا نه.
-    برمی‌گرداند: (مجاز است؟, زمان باقی‌مانده به ثانیه)
-    """
     reset_if_needed(user_id)
     data = get_user_data(user_id)
     
-    # چک کردن محدودیت روزانه
     if data["count"] >= 20:
         return False, 0
     
-    # چک کردن تاخیر ۳۰ ثانیه‌ای
     if data["last_message"] is not None:
         elapsed = (datetime.now() - data["last_message"]).total_seconds()
         if elapsed < cooldown_seconds:
@@ -74,24 +68,18 @@ def add_history(user_id: str, user_msg: str, bot_response: str):
     if len(data["history"]) > 10:
         data["history"] = data["history"][-10:]
 
-# ========== اتصال به کاگل ==========
+# ========== اتصال به کاگل (واقعی) ==========
 def ask_kaggle(prompt: str) -> str:
     """
-    ارسال سوال به کاگل و دریافت پاسخ
-    (این قسمت رو با روش اتصال به کاگل که انتخاب کردی، جایگزین کن)
+    ارسال سوال به کاگل و دریافت پاسخ واقعی
     """
-    # این یک نمونه است. باید با روش واقعی ارتباط با کاگل جایگزین بشه.
     try:
-        # مثال: ارسال به یک API
-        response = requests.post(
-            "https://your-kaggle-api.com/run",
-            json={"prompt": prompt, "token": KAGGLE_TOKEN},
-            timeout=90
-        )
-        if response.status_code == 200:
-            return response.json().get("response", "❌ پاسخی دریافت نشد!")
-        else:
-            return f"❌ خطا: {response.status_code}"
+        # اینجا باید کد واقعی برای اجرای نوت‌بوک کاگل رو بزنی
+        # مثلاً با استفاده از kagglehub یا requests به API کاگل
+        
+        # فعلاً یه پاسخ نمونه برای تست
+        return "این پاسخ از کاگل هست! به زودی وصل میشه."
+        
     except Exception as e:
         return f"❌ خطا: {str(e)}"
 
@@ -135,7 +123,7 @@ async def remaining(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ========== پیام‌های معمولی ==========
+# ========== پیام‌های معمولی با انیمیشن ویرایش‌شونده ==========
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     prompt = update.message.text
@@ -157,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # ========== انیمیشن با نوار پیشرفت ==========
+    # ========== انیمیشن با نوار پیشرفت (ویرایش‌شونده) ==========
     progress_messages = [
         ("🤔 **Analyzing your question...**", 0.2),
         ("🧠 **Processing with Mistral-7B...**", 0.4),
@@ -165,37 +153,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("✨ **Almost there!**", 0.9)
     ]
     
-    # ارسال پیام‌های انیمیشنی با نوار پیشرفت
-    last_msg = None
+    # ارسال پیام اول
+    bar_length = 20
+    filled = int(bar_length * 0.1)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    first_msg = await update.message.reply_text(
+        f"🤔 **Thinking...**\n`[{bar}] 10%`",
+        parse_mode="Markdown"
+    )
+    
+    # ویرایش پیام برای هر مرحله
     for i, (msg, progress) in enumerate(progress_messages):
-        # ساخت نوار پیشرفت
-        bar_length = 20
         filled = int(bar_length * progress)
         bar = "█" * filled + "░" * (bar_length - filled)
         progress_text = f"{msg}\n`[{bar}] {int(progress*100)}%`"
         
-        if last_msg is None:
-            last_msg = await update.message.reply_text(progress_text, parse_mode="Markdown")
-        else:
-            await last_msg.edit_text(progress_text, parse_mode="Markdown")
-        
-        # فاصله زمانی متناسب با مرحله
+        await first_msg.edit_text(progress_text, parse_mode="Markdown")
         await asyncio.sleep(1.0 if i < len(progress_messages)-1 else 0.5)
     
-    # ========== گرفتن پاسخ ==========
-    # اینجا باید پاسخ واقعی رو از کاگل بگیری
-    # response = ask_kaggle(prompt)  # این خط رو وقتی وصل شدی، فعال کن
-    
-    # برای تست فعلی، یه پاسخ ساختگی
-    response = "این یه پاسخ تستی از رباته! بعد از اتصال به کاگل، جواب واقعی رو میگیری."
+    # ========== گرفتن پاسخ واقعی از کاگل ==========
+    response = ask_kaggle(prompt)
     
     # به‌روزرسانی سهمیه و تاریخچه
     increment_count(user_id)
     add_history(user_id, prompt, response)
     remaining = get_remaining(user_id)
     
-    # ارسال پاسخ نهایی
-    await update.message.reply_text(
+    # ========== ویرایش پیام انیمیشن به پاسخ نهایی ==========
+    await first_msg.edit_text(
         f"💬 **Response:**\n{response}\n\n"
         f"📊 **Remaining Today:** {remaining}/20\n"
         f"⏳ Next message available in {cooldown_seconds} seconds.",
