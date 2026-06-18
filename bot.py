@@ -1,25 +1,32 @@
 # ============================================
-# ربات تلگرام با انیمیشن ویرایش‌شونده و اتصال به کاگل
+# ربات تلگرام متصل به کاگل با انیمیشن و تایمر
 # ============================================
 import os
 import time
-import json
 import asyncio
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import requests
-import subprocess
+import json
 
-# ========== تنظیمات ==========
+# ========== تنظیمات از Environment Variables ==========
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 KAGGLE_TOKEN = os.environ.get("KAGGLE_API_TOKEN")
 KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME")
 KAGGLE_KERNEL_SLUG = os.environ.get("KAGGLE_KERNEL_SLUG")
 
-# ========== دیتابیس ساده ==========
+# ========== بررسی وجود توکن ==========
+if not TELEGRAM_TOKEN:
+    print("❌ TELEGRAM_TOKEN not set!")
+    exit(1)
+
+# ========== تنظیمات ==========
+COOLDOWN_SECONDS = 30
+MAX_DAILY_MESSAGES = 20
+
+# ========== دیتابیس در حافظه ==========
 user_data = {}
-cooldown_seconds = 30
 
 def get_user_data(user_id: str) -> dict:
     if user_id not in user_data:
@@ -43,13 +50,13 @@ def can_ask(user_id: str) -> tuple:
     reset_if_needed(user_id)
     data = get_user_data(user_id)
     
-    if data["count"] >= 20:
+    if data["count"] >= MAX_DAILY_MESSAGES:
         return False, 0
     
     if data["last_message"] is not None:
         elapsed = (datetime.now() - data["last_message"]).total_seconds()
-        if elapsed < cooldown_seconds:
-            return False, int(cooldown_seconds - elapsed)
+        if elapsed < COOLDOWN_SECONDS:
+            return False, int(COOLDOWN_SECONDS - elapsed)
     
     return True, 0
 
@@ -60,7 +67,7 @@ def increment_count(user_id: str):
 
 def get_remaining(user_id: str) -> int:
     reset_if_needed(user_id)
-    return 20 - get_user_data(user_id)["count"]
+    return MAX_DAILY_MESSAGES - get_user_data(user_id)["count"]
 
 def add_history(user_id: str, user_msg: str, bot_response: str):
     data = get_user_data(user_id)
@@ -68,22 +75,32 @@ def add_history(user_id: str, user_msg: str, bot_response: str):
     if len(data["history"]) > 10:
         data["history"] = data["history"][-10:]
 
-# ========== اتصال به کاگل (واقعی) ==========
+# ========== اتصال به کاگل (با استفاده از Kaggle API) ==========
 def ask_kaggle(prompt: str) -> str:
     """
-    ارسال سوال به کاگل و دریافت پاسخ واقعی
+    ارسال سوال به کاگل و دریافت پاسخ
     """
     try:
-        # اینجا باید کد واقعی برای اجرای نوت‌بوک کاگل رو بزنی
-        # مثلاً با استفاده از kagglehub یا requests به API کاگل
+        # روش ۱: استفاده از kagglehub (اگه نصب باشه)
+        try:
+            import kagglehub
+            result = kagglehub.kernel_run(
+                f"{KAGGLE_USERNAME}/{KAGGLE_KERNEL_SLUG}",
+                args=[prompt]
+            )
+            return result.strip()
+        except ImportError:
+            pass
         
-        # فعلاً یه پاسخ نمونه برای تست
-        return "این پاسخ از کاگل هست! به زودی وصل میشه."
+        # روش ۲: استفاده از requests به API کاگل
+        # اینجا باید API واقعی کاگل رو بزنی
+        # فعلاً یه پاسخ تستی
+        return f"✅ پاسخ به: {prompt}\n(اتصال به کاگل در حال تنظیم...)"
         
     except Exception as e:
         return f"❌ خطا: {str(e)}"
 
-# ========== دستورات ==========
+# ========== دستورات ربات ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     remaining = get_remaining(user_id)
@@ -91,8 +108,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **Welcome to Mistral AI Bot!**\n\n"
         f"• I'm powered by **Mistral-7B** on Kaggle GPU.\n"
-        f"• You have **{remaining}/20** messages remaining today.\n"
-        f"• You can send one message every **{cooldown_seconds} seconds**.\n"
+        f"• You have **{remaining}/{MAX_DAILY_MESSAGES}** messages today.\n"
+        f"• You can send one message every **{COOLDOWN_SECONDS} seconds**.\n"
         f"• Ask me anything! 🤔\n\n"
         f"📖 Type /help for more info.",
         parse_mode="Markdown"
@@ -107,9 +124,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• /start - Start the bot\n"
         f"• /help - Show this message\n"
         f"• /remaining - Check your remaining messages\n\n"
-        f"💰 **Daily Limit:** 20 messages per day\n"
-        f"⏰ **Cooldown:** {cooldown_seconds} seconds between messages\n"
-        f"📊 **Remaining Today:** {remaining}/20\n\n"
+        f"💰 **Daily Limit:** {MAX_DAILY_MESSAGES} messages\n"
+        f"⏰ **Cooldown:** {COOLDOWN_SECONDS} seconds\n"
+        f"📊 **Remaining Today:** {remaining}/{MAX_DAILY_MESSAGES}\n\n"
         f"⚡ Powered by Kaggle GPU (Tesla T4 × 2)",
         parse_mode="Markdown"
     )
@@ -118,12 +135,12 @@ async def remaining(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     remaining = get_remaining(user_id)
     await update.message.reply_text(
-        f"📊 **Remaining Messages:** {remaining}/20\n"
+        f"📊 **Remaining Messages:** {remaining}/{MAX_DAILY_MESSAGES}\n"
         f"⏰ Resets at midnight UTC.",
         parse_mode="Markdown"
     )
 
-# ========== پیام‌های معمولی با انیمیشن ویرایش‌شونده ==========
+# ========== مدیریت پیام‌ها با انیمیشن ==========
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     prompt = update.message.text
@@ -139,51 +156,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 f"❌ **Daily limit reached!**\n"
-                f"You have used 20/20 messages today.\n"
+                f"You have used {MAX_DAILY_MESSAGES}/{MAX_DAILY_MESSAGES} today.\n"
                 f"⏰ Please try again tomorrow.",
                 parse_mode="Markdown"
             )
         return
     
-    # ========== انیمیشن با نوار پیشرفت (ویرایش‌شونده) ==========
-    progress_messages = [
+    # ========== انیمیشن با نوار پیشرفت ==========
+    progress_steps = [
         ("🤔 **Analyzing your question...**", 0.2),
         ("🧠 **Processing with Mistral-7B...**", 0.4),
         ("⚡ **Fetching the best response...**", 0.7),
         ("✨ **Almost there!**", 0.9)
     ]
     
-    # ارسال پیام اول
-    bar_length = 20
-    filled = int(bar_length * 0.1)
-    bar = "█" * filled + "░" * (bar_length - filled)
-    first_msg = await update.message.reply_text(
-        f"🤔 **Thinking...**\n`[{bar}] 10%`",
+    # ارسال پیام اولیه
+    msg = await update.message.reply_text(
+        "🤔 **Thinking...**\n`[░░░░░░░░░░░░░░░░░░░░] 0%`",
         parse_mode="Markdown"
     )
     
-    # ویرایش پیام برای هر مرحله
-    for i, (msg, progress) in enumerate(progress_messages):
+    # ویرایش مرحله‌به‌مرحله
+    for text, progress in progress_steps:
+        bar_length = 20
         filled = int(bar_length * progress)
         bar = "█" * filled + "░" * (bar_length - filled)
-        progress_text = f"{msg}\n`[{bar}] {int(progress*100)}%`"
         
-        await first_msg.edit_text(progress_text, parse_mode="Markdown")
-        await asyncio.sleep(1.0 if i < len(progress_messages)-1 else 0.5)
+        await msg.edit_text(
+            f"{text}\n`[{bar}] {int(progress*100)}%`",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(1)
     
-    # ========== گرفتن پاسخ واقعی از کاگل ==========
+    # ========== دریافت پاسخ از کاگل ==========
     response = ask_kaggle(prompt)
     
-    # به‌روزرسانی سهمیه و تاریخچه
+    # به‌روزرسانی آمار
     increment_count(user_id)
     add_history(user_id, prompt, response)
     remaining = get_remaining(user_id)
     
-    # ========== ویرایش پیام انیمیشن به پاسخ نهایی ==========
-    await first_msg.edit_text(
+    # ========== ارسال پاسخ نهایی ==========
+    await msg.edit_text(
         f"💬 **Response:**\n{response}\n\n"
-        f"📊 **Remaining Today:** {remaining}/20\n"
-        f"⏳ Next message available in {cooldown_seconds} seconds.",
+        f"📊 **Remaining Today:** {remaining}/{MAX_DAILY_MESSAGES}\n"
+        f"⏳ Next message available in {COOLDOWN_SECONDS} seconds.",
         parse_mode="Markdown"
     )
 
