@@ -1,5 +1,5 @@
 # ============================================
-# ربات تلگرام با اتصال به کاگل (نسخه نهایی)
+# ربات تلگرام متصل به کاگل - نسخه نهایی
 # ============================================
 import os
 import sys
@@ -18,7 +18,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== تنظیمات ==========
+# ========== نصب خودکار kagglehub ==========
+try:
+    import kagglehub
+    logger.info("✅ kagglehub نصب است.")
+except ImportError:
+    logger.info("⏳ در حال نصب kagglehub...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "kagglehub"])
+    logger.info("✅ kagglehub نصب شد!")
+
+# ========== تنظیمات از Environment Variables ==========
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME")
 KAGGLE_KERNEL_SLUG = os.environ.get("KAGGLE_KERNEL_SLUG")
@@ -86,69 +95,25 @@ def add_history(user_id: str, user_msg: str, bot_response: str):
     if len(data["history"]) > 10:
         data["history"] = data["history"][-10:]
 
-# ========== اتصال به کاگل (با kaggle CLI) ==========
+# ========== اتصال به کاگل با kagglehub ==========
 def ask_kaggle(prompt: str) -> str:
     logger.info(f"⏳ ارسال سوال به کاگل: {prompt[:50]}...")
     
     try:
-        # تنظیم توکن
+        import kagglehub
+        import os
+        
         os.environ["KAGGLE_API_TOKEN"] = KAGGLE_API_TOKEN
         
-        # کد پایتون برای اجرا روی کاگل
-        code = f'''
-import sys
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-
-MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"
-prompt = sys.argv[1] if len(sys.argv) > 1 else "Hello"
-
-print("⏳ Loading model...")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    torch_dtype=torch.float16,
-    device_map="auto"
-)
-
-formatted_prompt = f"[INST] {{prompt}} [/INST]"
-inputs = tokenizer(formatted_prompt, return_tensors="pt").to("cuda")
-outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7, pad_token_id=tokenizer.eos_token_id)
-response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-if "[INST]" in response:
-    response = response.split("[/INST]")[-1].strip()
-
-print(response)
-'''
+        logger.info("⏳ در حال اجرای نوت‌بوک روی کاگل...")
+        result = kagglehub.kernel_run(
+            f"{KAGGLE_USERNAME}/{KAGGLE_KERNEL_SLUG}",
+            args=[prompt]
+        )
         
-        # ذخیره کد در فایل موقت
-        with tempfile.TemporaryDirectory() as tmpdir:
-            os.makedirs(f"{tmpdir}/kernel", exist_ok=True)
-            with open(f"{tmpdir}/kernel/main.py", "w") as f:
-                f.write(code)
-            
-            logger.info("⏳ در حال ارسال به کاگل...")
-            result = subprocess.run(
-                ["kaggle", "kernels", "push", "-p", f"{tmpdir}/kernel"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            
-            if result.returncode == 0:
-                response = result.stdout.strip() or "پاسخی دریافت نشد!"
-                logger.info(f"✅ پاسخ دریافت شد: {response[:50]}...")
-                return response
-            else:
-                error_msg = result.stderr.strip()
-                logger.error(f"❌ خطا: {error_msg}")
-                return f"❌ خطا: {error_msg}"
-            
-    except subprocess.TimeoutExpired:
-        return "⏰ زمان اجرا تموم شد! دوباره تلاش کن."
-    except FileNotFoundError:
-        return "❌ kaggle CLI نصب نیست! با pip install kaggle نصبش کن."
+        logger.info(f"✅ پاسخ دریافت شد: {result[:50]}...")
+        return result.strip()
+        
     except Exception as e:
         logger.error(f"❌ خطا: {str(e)}")
         return f"❌ خطا: {str(e)}"
@@ -221,16 +186,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # انیمیشن
     try:
+        # پیام اولیه
         msg = await update.message.reply_text("⏳ Thinking...")
-        await asyncio.sleep(2)
         
+        # گرفتن پاسخ از کاگل
         response = ask_kaggle(prompt)
+        
+        # به‌روزرسانی آمار
         increment_count(user_id)
         add_history(user_id, prompt, response)
         remaining = get_remaining(user_id)
         
+        # ارسال پاسخ نهایی
         await msg.edit_text(
             f"💬 Response:\n{response}\n\n"
             f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
