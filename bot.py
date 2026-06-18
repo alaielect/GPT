@@ -1,12 +1,12 @@
 # ============================================
-# ربات تلگرام متصل به کاگل - نسخه نهایی
+# ربات تلگرام با اتصال مستقیم به API کاگل
 # ============================================
 import os
 import sys
 import logging
 import asyncio
-import subprocess
-import tempfile
+import requests
+import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -18,16 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== نصب خودکار kagglehub ==========
-try:
-    import kagglehub
-    logger.info("✅ kagglehub نصب است.")
-except ImportError:
-    logger.info("⏳ در حال نصب kagglehub...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "kagglehub"])
-    logger.info("✅ kagglehub نصب شد!")
-
-# ========== تنظیمات از Environment Variables ==========
+# ========== تنظیمات ==========
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME")
 KAGGLE_KERNEL_SLUG = os.environ.get("KAGGLE_KERNEL_SLUG")
@@ -36,10 +27,6 @@ KAGGLE_API_TOKEN = os.environ.get("KAGGLE_API_TOKEN")
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN not set!")
     sys.exit(1)
-
-logger.info("🚀 ربات در حال راه‌اندازی...")
-logger.info(f"📊 KAGGLE_USERNAME: {KAGGLE_USERNAME}")
-logger.info(f"📊 KAGGLE_KERNEL_SLUG: {KAGGLE_KERNEL_SLUG}")
 
 # ========== تنظیمات ==========
 COOLDOWN_SECONDS = 30
@@ -83,7 +70,6 @@ def increment_count(user_id: str):
     data = get_user_data(user_id)
     data["count"] += 1
     data["last_message"] = datetime.now()
-    logger.info(f"📊 کاربر {user_id}: پیام شماره {data['count']}")
 
 def get_remaining(user_id: str) -> int:
     reset_if_needed(user_id)
@@ -95,84 +81,75 @@ def add_history(user_id: str, user_msg: str, bot_response: str):
     if len(data["history"]) > 10:
         data["history"] = data["history"][-10:]
 
-# ========== اتصال به کاگل با kagglehub ==========
+# ========== اتصال مستقیم به API کاگل ==========
 def ask_kaggle(prompt: str) -> str:
     logger.info(f"⏳ ارسال سوال به کاگل: {prompt[:50]}...")
     
     try:
-        import kagglehub
-        import os
+        url = "https://www.kaggle.com/api/v1/kernels/run"
         
-        os.environ["KAGGLE_API_TOKEN"] = KAGGLE_API_TOKEN
+        headers = {
+            "Authorization": f"Bearer {KAGGLE_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
         
-        logger.info("⏳ در حال اجرای نوت‌بوک روی کاگل...")
-        result = kagglehub.kernel_run(
-            f"{KAGGLE_USERNAME}/{KAGGLE_KERNEL_SLUG}",
-            args=[prompt]
-        )
+        data = {
+            "kernel": f"{KAGGLE_USERNAME}/{KAGGLE_KERNEL_SLUG}",
+            "args": [prompt]
+        }
         
-        logger.info(f"✅ پاسخ دریافت شد: {result[:50]}...")
-        return result.strip()
+        response = requests.post(url, json=data, headers=headers, timeout=120)
         
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("response", "پاسخی دریافت نشد!")
+        else:
+            return f"❌ خطا: {response.status_code} - {response.text[:100]}"
+            
+    except requests.Timeout:
+        return "⏰ زمان اجرا تموم شد! دوباره تلاش کن."
     except Exception as e:
-        logger.error(f"❌ خطا: {str(e)}")
         return f"❌ خطا: {str(e)}"
 
 # ========== دستورات ربات ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    logger.info(f"📩 /start از کاربر {user_id}")
     remaining = get_remaining(user_id)
     
-    try:
-        await update.message.reply_text(
-            f"🤖 Welcome to Mistral AI Bot!\n\n"
-            f"You have {remaining}/{MAX_DAILY_MESSAGES} messages today.\n"
-            f"You can send one message every {COOLDOWN_SECONDS} seconds.\n\n"
-            f"Type /help for more info."
-        )
-        logger.info(f"✅ /start برای کاربر {user_id} ارسال شد")
-    except Exception as e:
-        logger.error(f"❌ خطا در /start: {str(e)}")
+    await update.message.reply_text(
+        f"🤖 Welcome to Mistral AI Bot!\n\n"
+        f"You have {remaining}/{MAX_DAILY_MESSAGES} messages today.\n"
+        f"Send one message every {COOLDOWN_SECONDS} seconds.\n\n"
+        f"Type /help for more info."
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    logger.info(f"📩 /help از کاربر {user_id}")
     remaining = get_remaining(user_id)
     
-    try:
-        await update.message.reply_text(
-            f"📖 Help & Commands\n\n"
-            f"/start - Start the bot\n"
-            f"/help - Show this message\n"
-            f"/remaining - Check your remaining messages\n\n"
-            f"Daily Limit: {MAX_DAILY_MESSAGES} messages\n"
-            f"Cooldown: {COOLDOWN_SECONDS} seconds\n"
-            f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
-        )
-        logger.info(f"✅ /help برای کاربر {user_id} ارسال شد")
-    except Exception as e:
-        logger.error(f"❌ خطا در /help: {str(e)}")
+    await update.message.reply_text(
+        f"📖 Help & Commands\n\n"
+        f"/start - Start the bot\n"
+        f"/help - Show this message\n"
+        f"/remaining - Check your remaining messages\n\n"
+        f"Daily Limit: {MAX_DAILY_MESSAGES} messages\n"
+        f"Cooldown: {COOLDOWN_SECONDS} seconds\n"
+        f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
+    )
 
 async def remaining(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    logger.info(f"📩 /remaining از کاربر {user_id}")
     remaining = get_remaining(user_id)
     
-    try:
-        await update.message.reply_text(
-            f"Remaining Messages: {remaining}/{MAX_DAILY_MESSAGES}\n"
-            f"Resets at midnight UTC."
-        )
-        logger.info(f"✅ /remaining برای کاربر {user_id} ارسال شد")
-    except Exception as e:
-        logger.error(f"❌ خطا در /remaining: {str(e)}")
+    await update.message.reply_text(
+        f"Remaining Messages: {remaining}/{MAX_DAILY_MESSAGES}\n"
+        f"Resets at midnight UTC."
+    )
 
 # ========== مدیریت پیام‌ها ==========
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     prompt = update.message.text
-    logger.info(f"📩 پیام از کاربر {user_id}: {prompt[:50]}...")
     
     allowed, wait_time = can_ask(user_id)
     if not allowed:
@@ -187,51 +164,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # پیام اولیه
         msg = await update.message.reply_text("⏳ Thinking...")
         
-        # گرفتن پاسخ از کاگل
         response = ask_kaggle(prompt)
         
-        # به‌روزرسانی آمار
         increment_count(user_id)
         add_history(user_id, prompt, response)
         remaining = get_remaining(user_id)
         
-        # ارسال پاسخ نهایی
         await msg.edit_text(
             f"💬 Response:\n{response}\n\n"
             f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
         )
-        logger.info(f"✅ پاسخ برای کاربر {user_id} ارسال شد")
         
     except Exception as e:
-        logger.error(f"❌ خطا در پردازش پیام: {str(e)}")
-        try:
-            await update.message.reply_text(f"❌ خطا: {str(e)}")
-        except:
-            logger.error("❌ حتی ارسال پیام خطا هم ناموفق بود!")
+        await update.message.reply_text(f"❌ خطا: {str(e)}")
 
 # ========== اجرا ==========
 def main():
-    logger.info("🚀 ربات در حال اجرا...")
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        logger.info("✅ اپلیکیشن ساخته شد")
-        
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("remaining", remaining))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        logger.info("✅ هندلرها اضافه شدند")
-        
-        logger.info("🚀 شروع به Polling...")
-        app.run_polling()
-        
-    except Exception as e:
-        logger.error(f"❌ خطا در اجرای اصلی: {str(e)}")
-        sys.exit(1)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("remaining", remaining))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    logger.info("🚀 Bot is running!")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
