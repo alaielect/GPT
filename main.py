@@ -44,7 +44,7 @@ async def webhook(request: Request):
         result = response.json()
         ai_reply = result.get("response", "خطا در پردازش")
     except Exception as e:
-        ai_reply = f"⚠️ Kaggle در دسترس نیست: {str(e)}"
+        ai_reply = f"⚠️ Kaggle در دسhترس نیست: {str(e)}"
     
     await send_to_telegram(chat_id, ai_reply)
     return {"status": "ok"}
