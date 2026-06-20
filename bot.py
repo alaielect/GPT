@@ -1,196 +1,64 @@
-# ============================================
-# ربات تلگرام با اتصال مستقیم به API کاگل
-# ============================================
-import os
-import sys
-import logging
-import asyncio
+from fastapi import FastAPI, Request
 import requests
-import json
+import asyncio
+import time
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ========== تنظیم لاگ ==========
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+app = FastAPI()
 
-# ========== تنظیمات ==========
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME")
-KAGGLE_KERNEL_SLUG = os.environ.get("KAGGLE_KERNEL_SLUG")
-KAGGLE_API_TOKEN = os.environ.get("KAGGLE_API_TOKEN")
+# تنظیمات
+KAGGLE_URL = "https://publisher-mashed-trembling.ngrok-free.dev"  # این رو بعداً بروزرسانی کن
+TELEGRAM_TOKEN = "8945063461:AAFru7ADhexqG8L8XxiXI8kXSoQ90B9bUWU"
+LAST_ACTIVITY = time.time()
+KAGGLE_ACTIVE = True
 
-if not TELEGRAM_TOKEN:
-    logger.error("❌ TELEGRAM_TOKEN not set!")
-    sys.exit(1)
+async def send_to_telegram(chat_id, text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
 
-# ========== تنظیمات ==========
-COOLDOWN_SECONDS = 30
-MAX_DAILY_MESSAGES = 20
-user_data = {}
-
-# ========== توابع دیتابیس ==========
-def get_user_data(user_id: str) -> dict:
-    if user_id not in user_data:
-        user_data[user_id] = {
-            "count": 0,
-            "last_reset": datetime.now().strftime("%Y-%m-%d"),
-            "last_message": None,
-            "history": []
-        }
-    return user_data[user_id]
-
-def reset_if_needed(user_id: str):
-    data = get_user_data(user_id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    if data["last_reset"] != today:
-        data["count"] = 0
-        data["last_reset"] = today
-        data["history"] = []
-
-def can_ask(user_id: str) -> tuple:
-    reset_if_needed(user_id)
-    data = get_user_data(user_id)
+@app.post("/webhook")
+async def webhook(request: Request):
+    global LAST_ACTIVITY, KAGGLE_ACTIVE
     
-    if data["count"] >= MAX_DAILY_MESSAGES:
-        return False, 0
+    data = await request.json()
+    LAST_ACTIVITY = time.time()
     
-    if data["last_message"] is not None:
-        elapsed = (datetime.now() - data["last_message"]).total_seconds()
-        if elapsed < COOLDOWN_SECONDS:
-            return False, int(COOLDOWN_SECONDS - elapsed)
+    # استخراج پیام
+    message = data.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "")
     
-    return True, 0
-
-def increment_count(user_id: str):
-    data = get_user_data(user_id)
-    data["count"] += 1
-    data["last_message"] = datetime.now()
-
-def get_remaining(user_id: str) -> int:
-    reset_if_needed(user_id)
-    return MAX_DAILY_MESSAGES - get_user_data(user_id)["count"]
-
-def add_history(user_id: str, user_msg: str, bot_response: str):
-    data = get_user_data(user_id)
-    data["history"].append({"user": user_msg, "bot": bot_response})
-    if len(data["history"]) > 10:
-        data["history"] = data["history"][-10:]
-
-# ========== اتصال مستقیم به API کاگل ==========
-def ask_kaggle(prompt: str) -> str:
-    logger.info(f"⏳ ارسال سوال به کاگل: {prompt[:50]}...")
+    if not chat_id or not text:
+        return {"status": "ok"}
     
+    print(f"دریافت پیام: {text}")
+    
+    # ارسال به Kaggle
     try:
-        url = "https://www.kaggle.com/api/v1/kernels/run"
-        
-        headers = {
-            "Authorization": f"Bearer {KAGGLE_API_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "kernel": f"{KAGGLE_USERNAME}/{KAGGLE_KERNEL_SLUG}",
-            "args": [prompt]
-        }
-        
-        response = requests.post(url, json=data, headers=headers, timeout=120)
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("response", "پاسخی دریافت نشد!")
-        else:
-            return f"❌ خطا: {response.status_code} - {response.text[:100]}"
-            
-    except requests.Timeout:
-        return "⏰ زمان اجرا تموم شد! دوباره تلاش کن."
-    except Exception as e:
-        return f"❌ خطا: {str(e)}"
-
-# ========== دستورات ربات ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    remaining = get_remaining(user_id)
-    
-    await update.message.reply_text(
-        f"🤖 Welcome to Mistral AI Bot!\n\n"
-        f"You have {remaining}/{MAX_DAILY_MESSAGES} messages today.\n"
-        f"Send one message every {COOLDOWN_SECONDS} seconds.\n\n"
-        f"Type /help for more info."
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    remaining = get_remaining(user_id)
-    
-    await update.message.reply_text(
-        f"📖 Help & Commands\n\n"
-        f"/start - Start the bot\n"
-        f"/help - Show this message\n"
-        f"/remaining - Check your remaining messages\n\n"
-        f"Daily Limit: {MAX_DAILY_MESSAGES} messages\n"
-        f"Cooldown: {COOLDOWN_SECONDS} seconds\n"
-        f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
-    )
-
-async def remaining(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    remaining = get_remaining(user_id)
-    
-    await update.message.reply_text(
-        f"Remaining Messages: {remaining}/{MAX_DAILY_MESSAGES}\n"
-        f"Resets at midnight UTC."
-    )
-
-# ========== مدیریت پیام‌ها ==========
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    prompt = update.message.text
-    
-    allowed, wait_time = can_ask(user_id)
-    if not allowed:
-        if wait_time > 0:
-            await update.message.reply_text(
-                f"Please wait {wait_time} seconds before sending another message."
-            )
-        else:
-            await update.message.reply_text(
-                f"Daily limit reached! You have used {MAX_DAILY_MESSAGES}/{MAX_DAILY_MESSAGES} today."
-            )
-        return
-    
-    try:
-        msg = await update.message.reply_text("⏳ Thinking...")
-        
-        response = ask_kaggle(prompt)
-        
-        increment_count(user_id)
-        add_history(user_id, prompt, response)
-        remaining = get_remaining(user_id)
-        
-        await msg.edit_text(
-            f"💬 Response:\n{response}\n\n"
-            f"Remaining Today: {remaining}/{MAX_DAILY_MESSAGES}"
+        response = requests.post(
+            f"{KAGGLE_URL}/infer",
+            json={"message": text},
+            timeout=30
         )
-        
+        result = response.json()
+        ai_reply = result.get("response", "خطا در پردازش")
     except Exception as e:
-        await update.message.reply_text(f"❌ خطا: {str(e)}")
-
-# ========== اجرا ==========
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+        ai_reply = f"⚠️ Kaggle در دسترس نیست: {str(e)}"
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("remaining", remaining))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("🚀 Bot is running!")
-    app.run_polling()
+    await send_to_telegram(chat_id, ai_reply)
+    return {"status": "ok"}
 
-if __name__ == "__main__":
-    main()
+@app.get("/")
+async def home():
+    return {"status": "Telegram Bot + Kaggle is running!"}
+
+# Health check
+@app.get("/health")
+async def health():
+    idle_time = int(time.time() - LAST_ACTIVITY)
+    return {
+        "status": "ok",
+        "kaggle_url": KAGGLE_URL,
+        "idle_seconds": idle_time
+        }
